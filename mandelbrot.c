@@ -1,34 +1,42 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <complex.h>
+
+double pix_size;
+
+unsigned char color(double distance) {
+    if (distance < 0.5 * pix_size) {
+        return pow(distance / (0.5 * pix_size), 1.0/3.0) * 255;
+    } else {
+        return 255;
+    }
+}
 
 unsigned char mandelbrot(double complex c) {
     int iter = 0;
-    int iter_max = 1000;
+    int iter_max = 10000;
     double r = 0.0;
-    double r_max = 2.0;
+    double r_max = 1 << 18;
     double complex z = 0.0 + 0.0 * I;
+    double complex dz = 0.0 + 0.0 * I;
 
     while (r < r_max && iter < iter_max) {
+        dz = 2.0 * z * dz + 1.0;
         z = z * z + c;
         r = cabs(z);
         iter += 1;
     }
 
-    unsigned char white = 255;
-    unsigned char black = 0;
+    double distance = 2.0 * log(cabs(z)) * cabs(z) / cabs(dz);
 
-    if (iter < iter_max) {
-        return white;
-    } else {
-        return black;
-    }
+    return color(distance);
 }
 
 int write_out(int dim_x, int dim_y, unsigned char * pixels) {
     FILE * fp;
 
-    fp = fopen("mandelbrot.txt", "w");
+    fp = fopen("mandelbrot.pgm", "w");
 
     fprintf(fp, "P5\n");
     fprintf(fp, "%d %d\n", dim_x, dim_y);
@@ -53,7 +61,7 @@ int main(int argc, char *argv[])
     double max_y = ctr_y + len_y/2.0;
 
     int pix_count_x = 1024;
-    double pix_size = len_x / pix_count_x;
+    pix_size = len_x / pix_count_x;
     int pix_count_y = len_y / pix_size;
 
     unsigned char * pixels;
