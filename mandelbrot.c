@@ -2,17 +2,26 @@
 #include <stdlib.h>
 #include <math.h>
 #include <complex.h>
+#include <assert.h>
 
 double pix_size;
+#pragma acc declare copyin (pix_size)
 
 typedef struct hsv {double h; double s; double v;} hsv;
-typedef struct rgb {double r; double g; double b;} rgb;
+typedef struct rgb {unsigned char r; unsigned char g; unsigned char b;} rgb;
 
-void color(double distance, int iter, int iter_max, hsv * pixel) {
+#pragma acc routine (my_cabs) seq
+double my_cabs(double complex c) {
+    return sqrt(creal(c) * creal(c) + cimag(c) * cimag(c));
+}
+
+#pragma acc routine (color) seq
+void color(double distance, int iter, int iter_max, double r, double r_max, hsv * pixel) {
     if (iter >= iter_max) {
         pixel -> h = 0.0;
         pixel -> s = 0.0;
         pixel -> v = 1.0;
+        return;
     }
 
     if (distance < 0.5 * pix_size) {
@@ -23,11 +32,13 @@ void color(double distance, int iter, int iter_max, hsv * pixel) {
 
     pixel -> s = 0.7;
 
-    double hue = 10.0 * log(iter) / log(iter_max);
+    double iter_cont = iter - log2(log(r) / log(r_max));
+    double hue = 10.0 * log(iter_cont) / log(iter_max);
     hue = hue - floor(hue);
-    pixel -> h = hue;
+    pixel -> h = hue * 360.0;
 }
 
+#pragma acc routine (mandelbrot) seq
 void mandelbrot(double complex c, hsv * pixel) {
     int iter = 0;
     int iter_max = 10000;
@@ -39,56 +50,61 @@ void mandelbrot(double complex c, hsv * pixel) {
     while (r < r_max && iter < iter_max) {
         dz = 2.0 * z * dz + 1.0;
         z = z * z + c;
-        r = cabs(z);
+        r = my_cabs(z);
         iter += 1;
     }
 
-    double distance = 2.0 * log(cabs(z)) * cabs(z) / cabs(dz);
+    double distance = 2.0 * log(my_cabs(z)) * my_cabs(z) / my_cabs(dz);
 
-    color(distance, iter, iter_max, pixel);
+    color(distance, iter, iter_max, r, r_max, pixel);
 }
 
 rgb hsv2rgb(hsv hsv_val) {
-    double c = hsv.v * hsv.s;
-    double h_prime = hsv.h / 60.0;
+    double c = hsv_val.v * hsv_val.s;
+    double h_prime = hsv_val.h / 60.0;
     double x = c * (1.0 - fabs(fmod(h_prime, 2.0) - 1.0));
 
     rgb rgb_val;
+    double r, g, b;
 
     assert(h_prime >= 0.0);
     assert(h_prime <= 6.0);
 
     if (h_prime >= 0.0 && h_prime <= 1.0) {
-        rgb_val.r = c;
-        rgb_val.g = x;
-        rgb_val.b = 0.0;
+        r = c;
+        g = x;
+        b = 0.0;
     } else if (h_prime <= 2.0) {
-        rgb_val.r = x;
-        rgb_val.g = c;
-        rgb_val.b = 0.0;
+        r = x;
+        g = c;
+        b = 0.0;
     } else if (h_prime <= 3.0) {
-        rgb_val.r = 0.0;
-        rgb_val.g = c;
-        rgb_val.b = x;
+        r = 0.0;
+        g = c;
+        b = x;
     } else if (h_prime <= 4.0) {
-        rgb_val.r = 0.0;
-        rgb_val.g = x;
-        rgb_val.b = c;
+        r = 0.0;
+        g = x;
+        b = c;
     } else if (h_prime <= 5.0) {
-        rgb_val.r = x;
-        rgb_val.g = 0.0;
-        rgb_val.b = c;
+        r = x;
+        g = 0.0;
+        b = c;
     } else if (h_prime <= 6.0) {
-        rgb_val.r = c;
-        rgb_val.g = 0.0;
-        rgb_val.b = x;
+        r = c;
+        g = 0.0;
+        b = x;
     }
 
-    double m = hsv.v - c;
-    rgb_val.r += m;
-    rgb_val.g += m;
-    rgb_val.b += m;
+    double m = hsv_val.v - c;
+    r += m;
+    g += m;
+    b += m;
 
+    rgb_val.r = r * 255;
+    rgb_val.g = g * 255;
+    rgb_val.b = b * 255;
+    
     return rgb_val;
 }
 
@@ -113,25 +129,25 @@ int write_out(int dim_x, int dim_y, hsv * pixels) {
 
 int main(int argc, char *argv[])
 {
-    double ctr_x = -0.75;
-    double ctr_y = 0.00;
+    double ctr_x = atof(argv[1]);
+    double ctr_y = atof(argv[2]);
 
-    double len_x = 2.75;
-    double len_y = 2.0;
+    double len_x = atof(argv[3]);
+    double len_y = atof(argv[3]);
 
     double min_x = ctr_x - len_x/2.0;
     double max_y = ctr_y + len_y/2.0;
 
-    int pix_count_x = 1024;
+    int pix_count_x = atoi(argv[4]);
     pix_size = len_x / pix_count_x;
     int pix_count_y = len_y / pix_size;
 
-    hsv * pixels;
+    hsv * restrict pixels = (hsv *) malloc(pix_count_x * pix_count_y * sizeof(pixels[0]));
+    #pragma acc enter data create(pixels[0:pix_count_x * pix_count_y])
 
-    pixels = (hsv *) malloc(pix_count_x * pix_count_y * sizeof(pixels[0]));
-
+    #pragma acc parallel loop collapse(2) present(pixels[0:pix_count_x * pix_count_y])
     for (int ipy = 0; ipy < pix_count_y; ++ipy) {
-        printf("ipy = %d of %d\n", ipy, pix_count_y);
+        // printf("ipy = %d of %d\n", ipy, pix_count_y);
         for (int ipx = 0; ipx < pix_count_x; ++ipx) {
             double complex c = min_x + ipx * pix_size + (max_y - ipy * pix_size) * I;
 
@@ -139,6 +155,8 @@ int main(int argc, char *argv[])
             mandelbrot(c, &pixels[i]);
         }
     }
+
+    #pragma acc exit data copyout(pixels[0:pix_count_x * pix_count_y])
 
     write_out(pix_count_x, pix_count_y, pixels);
     
