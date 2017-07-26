@@ -1,5 +1,5 @@
-CC=gcc
-CFLAGS=-std=c99 -Wall -Wextra -O3 -lm
+CC=pgcc
+CFLAGS=-c99 -acc -ta=tesla,cc60,pinned -Minfo=accel -fast -Minline
 EXEC=mandelbrot
 OBJ=mandelbrot.o
 
