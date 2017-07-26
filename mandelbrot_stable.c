@@ -42,26 +42,20 @@ void color(double distance, int iter, int iter_max, double r, double r_max, hsv 
 void mandelbrot(double complex c, hsv * pixel) {
     int iter = 0;
     int iter_max = 10000;
-    double r_max = 1 << 18;
-    double distance = 0.0;
     double r = 0.0;
-    double xoffset[4] = {-pix_size/6.0,pix_size/6.0,pix_size/6.0,-pix_size/6.0};
-    double yoffset[4] = {pix_size/6.0,pix_size/6.0,-pix_size/6.0,-pix_size/6.0};
-    for(int i = 0; i < 4; i++){
-        r = 0.0;
-        double complex c0 = c + xoffset[i] + yoffset[i]*I;
-        double complex z = 0.0 + 0.0 * I;
-        double complex dz = 0.0 + 0.0 * I;
-        iter = 0;
-        while (r < r_max && iter < iter_max) {
-            dz = 2.0 * z * dz + 1.0;
-            z = z * z + c0;
-            r = my_cabs(z);
-            iter += 1;
-        }
+    double r_max = 1 << 18;
+    double complex z = 0.0 + 0.0 * I;
+    double complex dz = 0.0 + 0.0 * I;
 
-        distance += 0.5 * log(my_cabs(z)) * my_cabs(z) / my_cabs(dz);
+    while (r < r_max && iter < iter_max) {
+        dz = 2.0 * z * dz + 1.0;
+        z = z * z + c;
+        r = my_cabs(z);
+        iter += 1;
     }
+
+    double distance = 2.0 * log(my_cabs(z)) * my_cabs(z) / my_cabs(dz);
+
     color(distance, iter, iter_max, r, r_max, pixel);
 }
 
@@ -163,18 +157,36 @@ int main(int argc, char *argv[])
     hsv * restrict pixels = (hsv *) malloc(pix_count_x * pix_count_y * sizeof(pixels[0]));
     #pragma acc enter data create(pixels[0:pix_count_x * pix_count_y])
 
-    #pragma acc parallel loop collapse(2) present(pixels[0:pix_count_x * pix_count_y])
-    for (int ipy = 0; ipy < pix_count_y; ++ipy) {
-        // printf("ipy = %d of %d\n", ipy, pix_count_y);
-        for (int ipx = 0; ipx < pix_count_x; ++ipx) {
-            double complex c = min_x + ipx * pix_size + (max_y - ipy * pix_size) * I;
-
-            int i = ipy * pix_count_x + ipx;
-            mandelbrot(c, &pixels[i]);
+    int start_y = 0;
+    int stop_y = 0;
+    for (int block = 0; block < num_blocks; ++block) {
+        int num_px_this_block = pix_count_y / num_blocks;
+        if (block < pix_count_y % num_blocks) {
+            num_px_this_block++;
         }
-    }
+        stop_y += num_px_this_block;
 
-    #pragma acc exit data copyout(pixels[0:pix_count_x * pix_count_y])
+        #pragma acc parallel loop async(block) collapse(2) present(pixels[0:pix_count_x * pix_count_y])
+        for (int ipy = start_y; ipy < stop_y; ++ipy) {
+            for (int ipx = 0; ipx < pix_count_x; ++ipx) {
+                double complex c = min_x + ipx * pix_size + (max_y - ipy * pix_size) * I;
+
+                int i = ipy * pix_count_x + ipx;
+                if (i >= pix_count_x * pix_count_y) {
+                    i = pix_count_x * pix_count_y - 1;
+                }
+
+                mandelbrot(c, &pixels[i]);
+            }
+        }
+
+        printf("End of loop!\n");
+
+        #pragma acc update async(block) host(pixels[start_y * pix_count_x:num_px_this_block * pix_count_x])
+
+        start_y += num_px_this_block;
+    }
+    #pragma acc wait
 
     write_out(pix_count_x, pix_count_y, pixels);
     
